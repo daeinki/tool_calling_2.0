@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      # 형식 = 의사소통: 단일 규칙을 CI가 강제한다.
+      - name: Format
+        run: cargo fmt --all --check
+
+      # 경고 0을 머지 기준으로 삼는다.
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test --workspace
+
+      # M1 게이트: 골든 픽스처 10개 일치 + 음성 케이스 전부 거부.
+      - name: M1 gate
+        run: cargo run -p ptc-harness --bin m1-gate
+
+      # M2 게이트(Mock 경로): 골든 태스크 R회 통과율 1.0 + HARNESS_BUG 0.
+      # 라이브(Anthropic) 게이트는 키가 필요해 CI 기본 파이프라인에서 제외한다.
+      - name: M2 gate (mock)
+        run: cargo run -p ptc-harness --bin m2-gate
+
+      # M3 게이트(Mock 3종): 스위트 통과율 표 재현 + PARSE_ERROR < 10% + HARNESS_BUG 0.
+      # 라이브(3 provider) 비교는 키/로컬 서버가 필요해 m3-live로 분리한다.
+      - name: M3 gate (mock)
+        run: cargo run -p ptc-harness --bin m3-gate
+
+      # M4 게이트(PTC vs baseline 1.0): McNemar 비열등 + 부트스트랩 CI로 토큰·호출 절감 입증.
+      - name: M4 gate (mock)
+        run: cargo run -p ptc-harness --bin m4-gate

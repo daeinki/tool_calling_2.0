@@ -1,0 +1,20 @@
+# 골든 태스크 (M3) — 자동 생성(gen-tasks). 기대값은 레퍼런스 해법 실행에서 도출.
+# tier=hard · domains=hr,finance · grader=L1
+id = "hard_eng_q3_overage_total"
+tier = "hard"
+domains = ["hr", "finance"]
+question = "엔지니어링 팀에서 Q3 예산을 초과한 사람들의 초과액 총합은?"
+grader = "L1"
+expected_output = 3750.0
+
+[[expected_tool_calls]]
+tool = "get_budget"
+count = 1
+
+[[expected_tool_calls]]
+tool = "get_expenses"
+count = 4
+
+[[expected_tool_calls]]
+tool = "list_team"
+count = 1

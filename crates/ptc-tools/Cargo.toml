@@ -1,0 +1,7 @@
+[package]
+name = "ptc-tools"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+ptc-dsl = { path = "../ptc-dsl" }

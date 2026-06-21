@@ -1,0 +1,7 @@
+[package]
+name = "ptc-dsl"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+thiserror.workspace = true

@@ -1,0 +1,14 @@
+[package]
+name = "ptc-harness"
+edition.workspace = true
+version.workspace = true
+
+[dependencies]
+ptc-dsl = { path = "../ptc-dsl" }
+ptc-tools = { path = "../ptc-tools" }
+ptc-llm = { path = "../ptc-llm" }
+ptc-analyze = { path = "../ptc-analyze" }
+serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
+thiserror.workspace = true

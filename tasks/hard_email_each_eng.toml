@@ -1,0 +1,15 @@
+# 골든 태스크 (M3) — 자동 생성(gen-tasks). 기대값은 레퍼런스 해법 실행에서 도출.
+# tier=hard · domains=hr · grader=L2
+id = "hard_email_each_eng"
+tier = "hard"
+domains = ["hr"]
+question = "엔지니어링 팀 전원에게 회의 요약 이메일을 보내줘."
+grader = "L2"
+
+[[expected_tool_calls]]
+tool = "list_team"
+count = 1
+
+[[expected_tool_calls]]
+tool = "send_email"
+count = 4
