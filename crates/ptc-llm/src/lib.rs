@@ -25,6 +25,7 @@ pub use mock::{estimate_tokens, MockProvider};
 pub use ollama::OllamaProvider;
 pub use openai::OpenAiProvider;
 
+use std::time::Instant;
 use thiserror::Error;
 
 /// 프롬프트를 코드 텍스트로 완성하는 LLM 백엔드.
@@ -85,6 +86,60 @@ pub enum LlmError {
 
     #[error("응답 디코딩 실패: {0}")]
     Decode(String),
+}
+
+/// provider 응답 파서가 돌려주는 공통 추출 결과(어댑터 3종이 공유한다).
+/// `CompletionResp`에서 latency를 뺀 부분으로, 전송 측이 latency를 채워 완성한다.
+pub(crate) struct ParsedResponse {
+    pub(crate) text: String,
+    pub(crate) input_tokens: u32,
+    pub(crate) output_tokens: u32,
+    pub(crate) stop_reason: String,
+}
+
+/// JSON 객체에서 u32 토큰 필드를 읽는다(객체가 없거나 필드가 없으면 0).
+/// 토큰 회계의 '누락=0' 규칙을 한 곳에 둔다(어댑터 3종 공유).
+pub(crate) fn u32_field(obj: Option<&serde_json::Value>, field: &str) -> u32 {
+    obj.and_then(|o| o.get(field))
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0) as u32
+}
+
+/// HTTP 요청을 보내고, 지연을 재고, 상태·본문을 검사한 뒤 provider별 `parse`로
+/// 디코딩해 [`CompletionResp`]를 만든다. 어댑터 3종이 공유하던 전송·디코딩 플러밍을
+/// 한 곳에 모았다(각 어댑터는 URL·헤더·본문과 parse 함수만 제공한다).
+pub(crate) fn send_and_decode(
+    request: reqwest::blocking::RequestBuilder,
+    parse: impl FnOnce(&serde_json::Value) -> Result<ParsedResponse, LlmError>,
+) -> Result<CompletionResp, LlmError> {
+    let started = Instant::now();
+    let response = request
+        .send()
+        .map_err(|e| LlmError::Transport(e.to_string()))?;
+    let latency_ms = started.elapsed().as_millis() as u64;
+
+    let status = response.status();
+    let text = response
+        .text()
+        .map_err(|e| LlmError::Transport(e.to_string()))?;
+    if !status.is_success() {
+        return Err(LlmError::Api {
+            status: status.as_u16(),
+            message: text,
+        });
+    }
+
+    let json: serde_json::Value =
+        serde_json::from_str(&text).map_err(|e| LlmError::Decode(e.to_string()))?;
+    let parsed = parse(&json)?;
+
+    Ok(CompletionResp {
+        text: parsed.text,
+        input_tokens: parsed.input_tokens,
+        output_tokens: parsed.output_tokens,
+        stop_reason: parsed.stop_reason,
+        latency_ms,
+    })
 }
 
 #[cfg(test)]

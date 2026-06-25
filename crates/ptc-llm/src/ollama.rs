@@ -4,8 +4,10 @@
 //! 엔드포인트는 `http://localhost:11434`이며 `OLLAMA_HOST`로 바꿀 수 있다. HTTP·JSON
 //! 세부는 이 모듈에 갇히고 바깥에는 [`LlmProvider`] trait만 보인다(경계, §7).
 
-use crate::{CompletionReq, CompletionResp, LlmError, LlmProvider};
-use std::time::Instant;
+use crate::{
+    send_and_decode, u32_field, CompletionReq, CompletionResp, LlmError, LlmProvider,
+    ParsedResponse,
+};
 
 const OLLAMA_BASE_URL: &str = "http://localhost:11434";
 const DEFAULT_MODEL: &str = "llama3.2";
@@ -84,53 +86,12 @@ impl LlmProvider for OllamaProvider {
 
     fn complete(&self, req: CompletionReq) -> Result<CompletionResp, LlmError> {
         let body = self.build_body(&req);
-        let started = Instant::now();
-        let response = self
+        let request = self
             .client
             .post(format!("{}/api/chat", self.base_url))
-            .json(&body)
-            .send()
-            .map_err(|e| LlmError::Transport(e.to_string()))?;
-        let latency_ms = started.elapsed().as_millis() as u64;
-
-        let status = response.status();
-        let text = response
-            .text()
-            .map_err(|e| LlmError::Transport(e.to_string()))?;
-        if !status.is_success() {
-            return Err(LlmError::Api {
-                status: status.as_u16(),
-                message: text,
-            });
-        }
-
-        let json: serde_json::Value =
-            serde_json::from_str(&text).map_err(|e| LlmError::Decode(e.to_string()))?;
-        // Ollama는 일부 실패(예: 모델 없음)를 200 본문의 `error` 필드로 신호한다.
-        // parse_response로 넘기면 'message.content 없음' Decode로 원인이 가려지므로 먼저 막는다.
-        if let Some(error) = error_in_body(&json) {
-            return Err(LlmError::Api {
-                status: status.as_u16(),
-                message: error.to_string(),
-            });
-        }
-        let parsed = parse_response(&json)?;
-
-        Ok(CompletionResp {
-            text: parsed.text,
-            input_tokens: parsed.input_tokens,
-            output_tokens: parsed.output_tokens,
-            stop_reason: parsed.stop_reason,
-            latency_ms,
-        })
+            .json(&body);
+        send_and_decode(request, parse_response)
     }
-}
-
-struct ParsedResponse {
-    text: String,
-    input_tokens: u32,
-    output_tokens: u32,
-    stop_reason: String,
 }
 
 /// 200 본문에 담긴 `error` 메시지(있으면). Ollama는 모델 없음 등을 이 형태로 신호한다.
@@ -140,6 +101,15 @@ fn error_in_body(json: &serde_json::Value) -> Option<&str> {
 
 /// Ollama chat 응답 JSON에서 코드 텍스트와 토큰 회계를 뽑는다.
 fn parse_response(json: &serde_json::Value) -> Result<ParsedResponse, LlmError> {
+    // Ollama는 일부 실패(예: 모델 없음)를 200 본문의 `error` 필드로 신호한다.
+    // 그대로 두면 'message.content 없음' Decode로 원인이 가려지므로 먼저 Api 에러로 바꾼다.
+    // (전송 측이 2xx일 때만 여기 도달하므로 status는 200으로 보고한다.)
+    if let Some(error) = error_in_body(json) {
+        return Err(LlmError::Api {
+            status: 200,
+            message: error.to_string(),
+        });
+    }
     let text = json
         .get("message")
         .and_then(|message| message.get("content"))
@@ -147,12 +117,10 @@ fn parse_response(json: &serde_json::Value) -> Result<ParsedResponse, LlmError> 
         .ok_or_else(|| LlmError::Decode("응답에 message.content가 없음".to_string()))?
         .to_string();
 
-    let token = |field: &str| json.get(field).and_then(|v| v.as_u64()).unwrap_or(0) as u32;
-
     Ok(ParsedResponse {
         text,
-        input_tokens: token("prompt_eval_count"),
-        output_tokens: token("eval_count"),
+        input_tokens: u32_field(Some(json), "prompt_eval_count"),
+        output_tokens: u32_field(Some(json), "eval_count"),
         stop_reason: json
             .get("done_reason")
             .and_then(|v| v.as_str())

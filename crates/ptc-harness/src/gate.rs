@@ -126,10 +126,7 @@ impl M2GateOutcome {
 
     /// HARNESS_BUG 건수. 1건이라도 있으면 게이트 미통과(설계 4.4절).
     pub fn harness_bugs(&self) -> usize {
-        self.results
-            .iter()
-            .filter(|r| r.category == Some(FailureCategory::HarnessBug))
-            .count()
+        count_category(&self.results, FailureCategory::HarnessBug)
     }
 
     /// 통과율 1.0 + HARNESS_BUG 0건이면 게이트 통과(Mock 경로 기준).
@@ -163,11 +160,7 @@ impl M2GateOutcome {
         );
         out.push_str("\n[실패 분류 분포]\n");
         for category in FailureCategory::ALL {
-            let count = self
-                .results
-                .iter()
-                .filter(|r| r.category == Some(category))
-                .count();
+            let count = count_category(&self.results, category);
             if count > 0 {
                 out.push_str(&format!("  {} {}\n", category, count));
             }
@@ -397,12 +390,16 @@ fn pass_signature(
     sig
 }
 
-fn count_harness_bugs(outcome: &BatchOutcome) -> usize {
-    outcome
-        .results
+/// 결과 집합에서 주어진 실패 분류의 건수. 게이트 전반에서 분류 카운트의 단일 출처다.
+fn count_category(results: &[RunResult], category: FailureCategory) -> usize {
+    results
         .iter()
-        .filter(|r| r.category == Some(FailureCategory::HarnessBug))
+        .filter(|r| r.category == Some(category))
         .count()
+}
+
+fn count_harness_bugs(outcome: &BatchOutcome) -> usize {
+    count_category(&outcome.results, FailureCategory::HarnessBug)
 }
 
 // ── M4 게이트 (PTC vs baseline 1.0 비교) ──
