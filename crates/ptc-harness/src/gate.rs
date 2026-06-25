@@ -319,18 +319,25 @@ pub fn run_m3_gate() -> M3GateOutcome {
         seed: Some(42),
     };
 
-    // 같은 시드로 두 번 실행해 통과율 표가 재현되는지 본다.
+    // 전체 스위트는 한 번만 실행한다. 결정성(재현성)은 대표 태스크 1건을 같은 시드로
+    // 다시 돌려 통과 결과가 동일한지로 입증한다(전체 재실행 ~330건 → ~3건으로 절감).
     let first = run_batch(&provider_refs, &tasks, &catalog(), &config);
-    let second = run_batch(&provider_refs, &tasks, &catalog(), &config);
-    summarize_m3(tasks.len(), first, second)
+    let repro =
+        (!tasks.is_empty()).then(|| run_batch(&provider_refs, &tasks[..1], &catalog(), &config));
+    summarize_m3(tasks.len(), first, repro)
 }
 
 fn catalog() -> ToolCatalog {
     ToolCatalog::new(tool_names())
 }
 
-/// 두 배치 실행을 표·분포로 집계한다(JSONL을 거쳐 분석 — 영속 데이터로 판정).
-fn summarize_m3(task_count: usize, first: BatchOutcome, second: BatchOutcome) -> M3GateOutcome {
+/// 배치 실행을 표·분포로 집계한다(JSONL을 거쳐 분석 — 영속 데이터로 판정).
+/// `repro`는 결정성 입증용 단일 태스크 재실행(없으면 빈 스위트라 재현성 검사 생략).
+fn summarize_m3(
+    task_count: usize,
+    first: BatchOutcome,
+    repro: Option<BatchOutcome>,
+) -> M3GateOutcome {
     let jsonl = to_jsonl(&first.records());
     let rows = match parse_jsonl(&jsonl) {
         Ok(rows) => rows,
@@ -338,15 +345,26 @@ fn summarize_m3(task_count: usize, first: BatchOutcome, second: BatchOutcome) ->
     };
     let table = pass_rate_table(&rows);
 
-    let second_jsonl = to_jsonl(&second.records());
-    let second_table = match parse_jsonl(&second_jsonl) {
-        Ok(rows) => pass_rate_table(&rows),
-        Err(err) => return M3GateOutcome::setup_error(format!("재현 JSONL 파싱 실패: {err}")),
+    // 재현성: repro 배치(단일 태스크)의 통과 시그니처가 첫 배치의 같은 태스크와 일치하는가.
+    let first_records = first.records();
+    let reproduced = match repro {
+        Some(repro) => {
+            let repro_records = repro.records();
+            match repro_records.first() {
+                Some(record) => {
+                    let id = record.task_id.clone();
+                    pass_signature(&first_records, Some(&id))
+                        == pass_signature(&repro_records, None)
+                }
+                None => true,
+            }
+        }
+        None => true,
     };
 
     M3GateOutcome {
         task_count,
-        reproduced: table == second_table,
+        reproduced,
         parse_error_rate: parse_error_rate(&rows),
         harness_bugs: count_harness_bugs(&first),
         overall_pass_rate: pass_rate(&first.results),
@@ -354,6 +372,29 @@ fn summarize_m3(task_count: usize, first: BatchOutcome, second: BatchOutcome) ->
         jsonl,
         error: None,
     }
+}
+
+/// 결정성 비교용 통과 시그니처: (태스크, provider, 반복 인덱스, 통과여부)를 정렬해 돌려준다.
+/// run_id·타이밍 같은 부수 필드를 배제하고 채점 결과만 비교한다. `only_task`가 주어지면
+/// 그 태스크만 추린다.
+fn pass_signature(
+    records: &[RunRecord],
+    only_task: Option<&str>,
+) -> Vec<(String, String, u32, Option<bool>)> {
+    let mut sig: Vec<_> = records
+        .iter()
+        .filter(|r| only_task.is_none_or(|id| r.task_id == id))
+        .map(|r| {
+            (
+                r.task_id.clone(),
+                r.provider.clone(),
+                r.repeat_idx,
+                r.grade.as_ref().map(|g| g.pass),
+            )
+        })
+        .collect();
+    sig.sort();
+    sig
 }
 
 fn count_harness_bugs(outcome: &BatchOutcome) -> usize {

@@ -47,7 +47,32 @@ impl Grader for ExactMatch {
     }
 
     fn grade(&self, execution: &Execution) -> bool {
-        execution.output == self.expected
+        match (&execution.output, &self.expected) {
+            (Some(actual), Some(expected)) => values_equivalent(actual, expected),
+            (None, None) => true,
+            _ => false,
+        }
+    }
+}
+
+/// 채점용 값 동등성. 인터프리터가 모든 산술을 f64로 수행하므로(나눗셈·누적 합),
+/// 파생된 수치는 비트 단위로 어긋날 수 있다. 수치는 상대+절대 허용오차로 비교하고,
+/// 리스트·맵은 구조를 따라 재귀 비교한다. 그 외(문자열·불리언·널)는 정확 일치.
+fn values_equivalent(a: &Value, b: &Value) -> bool {
+    /// 상대·절대 혼합 허용오차. 통화·카운트 같은 큰 정수도, 0 근방 값도 안전하게 본다.
+    const EPSILON: f64 = 1e-9;
+    match (a, b) {
+        (Value::Num(x), Value::Num(y)) => (x - y).abs() <= EPSILON * x.abs().max(y.abs()).max(1.0),
+        (Value::List(xs), Value::List(ys)) => {
+            xs.len() == ys.len() && xs.iter().zip(ys).all(|(x, y)| values_equivalent(x, y))
+        }
+        (Value::Map(xs), Value::Map(ys)) => {
+            xs.len() == ys.len()
+                && xs
+                    .iter()
+                    .all(|(k, x)| ys.get(k).is_some_and(|y| values_equivalent(x, y)))
+        }
+        _ => a == b,
     }
 }
 
@@ -145,6 +170,23 @@ mod tests {
     fn exact_match_fails_on_different_value() {
         let grader = ExactMatch::new(Some(Value::Num(13000.0)));
         assert!(!grader.grade(&execution(Some(Value::Num(42.0)))));
+    }
+
+    #[test]
+    fn exact_match_tolerates_float_rounding() {
+        // f64 누적/나눗셈 오차로 5000.0이 4999.999999999999로 나와도 통과한다.
+        let grader = ExactMatch::new(Some(Value::Num(5000.0)));
+        assert!(grader.grade(&execution(Some(Value::Num(4999.999999999999)))));
+        // 진짜 다른 값은 여전히 실패.
+        assert!(!grader.grade(&execution(Some(Value::Num(5000.5)))));
+    }
+
+    #[test]
+    fn exact_match_tolerance_recurses_into_collections() {
+        let expected = Value::List(vec![Value::Num(1.0 / 3.0 * 3.0), Value::Str("x".into())]);
+        let actual = Value::List(vec![Value::Num(1.0), Value::Str("x".into())]);
+        let grader = ExactMatch::new(Some(expected));
+        assert!(grader.grade(&execution(Some(actual))));
     }
 
     #[test]

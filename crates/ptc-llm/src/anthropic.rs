@@ -119,12 +119,19 @@ struct ParsedResponse {
 
 /// Messages API 응답 JSON에서 코드 텍스트와 토큰 회계를 뽑는다.
 fn parse_response(json: &serde_json::Value) -> Result<ParsedResponse, LlmError> {
+    // content는 블록 배열이며 첫 블록이 항상 text는 아니다(extended thinking이 켜지면
+    // thinking 블록이, 도구 사용 시 tool_use 블록이 앞설 수 있다). 첫 text 블록을 찾는다.
     let text = json
         .get("content")
-        .and_then(|content| content.get(0))
-        .and_then(|block| block.get("text"))
-        .and_then(|t| t.as_str())
-        .ok_or_else(|| LlmError::Decode("응답에 content[0].text가 없음".to_string()))?
+        .and_then(|content| content.as_array())
+        .and_then(|blocks| {
+            blocks
+                .iter()
+                .find(|block| block.get("type").and_then(|t| t.as_str()) == Some("text"))
+                .and_then(|block| block.get("text"))
+                .and_then(|t| t.as_str())
+        })
+        .ok_or_else(|| LlmError::Decode("응답에 text 블록이 없음".to_string()))?
         .to_string();
 
     let usage = json.get("usage");
@@ -178,6 +185,30 @@ mod tests {
     #[test]
     fn missing_content_is_a_decode_error() {
         let json = serde_json::json!({ "usage": { "input_tokens": 1 } });
+        assert!(matches!(parse_response(&json), Err(LlmError::Decode(_))));
+    }
+
+    #[test]
+    fn picks_text_block_after_a_leading_non_text_block() {
+        // extended thinking이 켜지면 thinking 블록이 text 블록 앞에 온다.
+        let json = serde_json::json!({
+            "content": [
+                { "type": "thinking", "thinking": "...추론..." },
+                { "type": "text", "text": "emit(4)" }
+            ],
+            "usage": { "input_tokens": 10, "output_tokens": 2 },
+            "stop_reason": "end_turn"
+        });
+        let parsed = parse_response(&json).unwrap();
+        assert_eq!(parsed.text, "emit(4)");
+    }
+
+    #[test]
+    fn response_without_any_text_block_is_a_decode_error() {
+        let json = serde_json::json!({
+            "content": [{ "type": "tool_use", "name": "x", "input": {} }],
+            "stop_reason": "tool_use"
+        });
         assert!(matches!(parse_response(&json), Err(LlmError::Decode(_))));
     }
 

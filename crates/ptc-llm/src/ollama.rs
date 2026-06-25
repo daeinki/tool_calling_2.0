@@ -48,9 +48,14 @@ impl OllamaProvider {
         &self.model
     }
 
-    /// Chat 요청 본문. 스트리밍을 끄고 한 번에 받으며, temperature·seed는 options에 싣는다.
+    /// Chat 요청 본문. 스트리밍을 끄고 한 번에 받으며, temperature·seed·최대 토큰은
+    /// options에 싣는다. `num_predict`(=max_tokens)를 빼면 Anthropic/OpenAI와 토큰·지연
+    /// 비교가 불공정해지고 폭주 생성이 막히지 않으므로 함께 전달한다.
     fn build_body(&self, req: &CompletionReq) -> serde_json::Value {
-        let mut options = serde_json::json!({ "temperature": req.temperature });
+        let mut options = serde_json::json!({
+            "temperature": req.temperature,
+            "num_predict": req.max_tokens,
+        });
         if let Some(seed) = req.seed {
             options["seed"] = serde_json::json!(seed);
         }
@@ -101,6 +106,14 @@ impl LlmProvider for OllamaProvider {
 
         let json: serde_json::Value =
             serde_json::from_str(&text).map_err(|e| LlmError::Decode(e.to_string()))?;
+        // Ollama는 일부 실패(예: 모델 없음)를 200 본문의 `error` 필드로 신호한다.
+        // parse_response로 넘기면 'message.content 없음' Decode로 원인이 가려지므로 먼저 막는다.
+        if let Some(error) = error_in_body(&json) {
+            return Err(LlmError::Api {
+                status: status.as_u16(),
+                message: error.to_string(),
+            });
+        }
         let parsed = parse_response(&json)?;
 
         Ok(CompletionResp {
@@ -118,6 +131,11 @@ struct ParsedResponse {
     input_tokens: u32,
     output_tokens: u32,
     stop_reason: String,
+}
+
+/// 200 본문에 담긴 `error` 메시지(있으면). Ollama는 모델 없음 등을 이 형태로 신호한다.
+fn error_in_body(json: &serde_json::Value) -> Option<&str> {
+    json.get("error").and_then(|e| e.as_str())
 }
 
 /// Ollama chat 응답 JSON에서 코드 텍스트와 토큰 회계를 뽑는다.
@@ -158,6 +176,18 @@ mod tests {
         assert_eq!(body["messages"][0]["content"], "be a coder");
         assert_eq!(body["messages"][1]["content"], "2+2=?");
         assert_eq!(body["options"]["seed"], 7);
+        // max_tokens는 num_predict로 전달되어 출력 길이가 상한된다.
+        assert_eq!(body["options"]["num_predict"], req.max_tokens);
+    }
+
+    #[test]
+    fn error_field_in_body_is_detected() {
+        // Ollama는 모델 없음 등을 200 + {"error":...}로 신호 — Decode로 가리지 않는다.
+        let json = serde_json::json!({ "error": "model 'llama3.2' not found" });
+        assert_eq!(error_in_body(&json), Some("model 'llama3.2' not found"));
+        // 정상 응답에는 error 필드가 없다.
+        let ok = serde_json::json!({ "message": { "content": "emit(1)" } });
+        assert_eq!(error_in_body(&ok), None);
     }
 
     #[test]
