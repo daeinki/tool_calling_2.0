@@ -32,13 +32,14 @@ impl RunResult {
 }
 
 /// 한 실행의 식별 정보. 인수 수를 줄이려 한데 묶는다(clean-code §2).
-struct RunMeta<'a> {
-    run_id: String,
-    task: &'a Task,
-    provider_name: &'a str,
-    seed: Option<u64>,
-    temperature: f32,
-    repeat_idx: u32,
+/// PTC([`Runner`])·baseline([`crate::baseline::BaselineRunner`]) 양 러너가 공유한다.
+pub(crate) struct RunMeta<'a> {
+    pub(crate) run_id: String,
+    pub(crate) task: &'a Task,
+    pub(crate) provider_name: &'a str,
+    pub(crate) seed: Option<u64>,
+    pub(crate) temperature: f32,
+    pub(crate) repeat_idx: u32,
 }
 
 /// 러너 설정. 시스템 프롬프트·도구 카탈로그·모드를 묶는다.
@@ -98,7 +99,7 @@ impl<'a> Runner<'a> {
             Ok(resp) => resp,
             Err(err) => {
                 // provider/네트워크 실패는 코드 taxonomy에 속하지 않으므로 기록만 한다.
-                let mut record = self.skeleton(&meta);
+                let mut record = skeleton(&meta, self.mode, self.prompt_version, 1);
                 record.error = Some(format!("provider error: {err}"));
                 return RunResult {
                     record,
@@ -107,7 +108,8 @@ impl<'a> Runner<'a> {
             }
         };
 
-        let mut record = self.skeleton(&meta);
+        // PTC 모드: LLM 호출은 항상 1회.
+        let mut record = skeleton(&meta, self.mode, self.prompt_version, 1);
         record.generated_code = resp.text.clone();
         record.metrics.input_tokens = resp.input_tokens;
         record.metrics.output_tokens = resp.output_tokens;
@@ -177,35 +179,42 @@ impl<'a> Runner<'a> {
         }
     }
 
-    /// 실행 식별 정보로 빈 레코드 골격을 만든다. 호출자가 코드·지표·결과를 채운다.
-    fn skeleton(&self, meta: &RunMeta) -> RunRecord {
-        RunRecord {
-            run_id: meta.run_id.clone(),
-            task_id: meta.task.id.clone(),
-            tier: meta.task.tier.clone(),
-            mode: self.mode,
-            provider: meta.provider_name.to_string(),
-            model: meta.provider_name.to_string(),
-            prompt_version: self.prompt_version.to_string(),
-            seed: meta.seed,
-            temperature: meta.temperature,
-            repeat_idx: meta.repeat_idx,
-            generated_code: String::new(),
-            extraction: "n/a".to_string(),
-            validation: "n/a".to_string(),
-            tool_trace: Vec::new(),
-            final_output: None,
-            grade: None,
-            failure: None,
-            metrics: Metrics {
-                llm_calls: 1, // PTC 모드: LLM 호출은 항상 1회.
-                tool_calls: 0,
-                input_tokens: 0,
-                output_tokens: 0,
-                latency_ms: 0,
-            },
-            error: None,
-        }
+}
+
+/// 실행 식별 정보로 빈 레코드 골격을 만든다. 호출자가 코드·지표·결과를 채운다.
+/// PTC·baseline 러너가 공유하며, 모드와 `llm_calls` 시드만 다르다(PTC=1, baseline=0).
+pub(crate) fn skeleton(
+    meta: &RunMeta,
+    mode: Mode,
+    prompt_version: &str,
+    llm_calls: u32,
+) -> RunRecord {
+    RunRecord {
+        run_id: meta.run_id.clone(),
+        task_id: meta.task.id.clone(),
+        tier: meta.task.tier.clone(),
+        mode,
+        provider: meta.provider_name.to_string(),
+        model: meta.provider_name.to_string(),
+        prompt_version: prompt_version.to_string(),
+        seed: meta.seed,
+        temperature: meta.temperature,
+        repeat_idx: meta.repeat_idx,
+        generated_code: String::new(),
+        extraction: "n/a".to_string(),
+        validation: "n/a".to_string(),
+        tool_trace: Vec::new(),
+        final_output: None,
+        grade: None,
+        failure: None,
+        metrics: Metrics {
+            llm_calls,
+            tool_calls: 0,
+            input_tokens: 0,
+            output_tokens: 0,
+            latency_ms: 0,
+        },
+        error: None,
     }
 }
 
@@ -240,9 +249,14 @@ pub(crate) fn build_grader(task: &Task) -> Option<Box<dyn Grader>> {
     }
 }
 
-fn fail(mut record: RunRecord, category: FailureCategory, message: &str) -> RunResult {
+/// 실패 분류를 레코드에 박아 RunResult로 감싼다. PTC·baseline 러너가 공유한다.
+/// 분류를 레코드에 새겨 JSONL만으로 분포를 집계할 수 있게 한다(M3-T06).
+pub(crate) fn fail(
+    mut record: RunRecord,
+    category: FailureCategory,
+    message: &str,
+) -> RunResult {
     record.error = Some(message.to_string());
-    // 실패 분류를 레코드에 박아 JSONL만으로 분포를 집계할 수 있게 한다(M3-T06).
     record.failure = Some(category.label().to_string());
     RunResult {
         record,

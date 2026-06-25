@@ -5,8 +5,10 @@
 //! 라이브 호출은 키·네트워크가 필요하므로 `#[ignore]` 테스트·바이너리로 분리하고,
 //! 본 모듈은 요청 본문 구성·응답 파싱만 네트워크 없이 단위 검증한다.
 
-use crate::{CompletionReq, CompletionResp, LlmError, LlmProvider};
-use std::time::Instant;
+use crate::{
+    send_and_decode, u32_field, CompletionReq, CompletionResp, LlmError, LlmProvider,
+    ParsedResponse,
+};
 
 const OPENAI_BASE_URL: &str = "https://api.openai.com";
 /// 비용을 고려한 기본 모델. 더 강한 모델은 [`OpenAiProvider::with_model`]로 교체.
@@ -77,46 +79,13 @@ impl LlmProvider for OpenAiProvider {
 
     fn complete(&self, req: CompletionReq) -> Result<CompletionResp, LlmError> {
         let body = self.build_body(&req);
-        let started = Instant::now();
-        let response = self
+        let request = self
             .client
             .post(format!("{}/v1/chat/completions", self.base_url))
             .header("authorization", format!("Bearer {}", self.api_key))
-            .json(&body)
-            .send()
-            .map_err(|e| LlmError::Transport(e.to_string()))?;
-        let latency_ms = started.elapsed().as_millis() as u64;
-
-        let status = response.status();
-        let text = response
-            .text()
-            .map_err(|e| LlmError::Transport(e.to_string()))?;
-        if !status.is_success() {
-            return Err(LlmError::Api {
-                status: status.as_u16(),
-                message: text,
-            });
-        }
-
-        let json: serde_json::Value =
-            serde_json::from_str(&text).map_err(|e| LlmError::Decode(e.to_string()))?;
-        let parsed = parse_response(&json)?;
-
-        Ok(CompletionResp {
-            text: parsed.text,
-            input_tokens: parsed.input_tokens,
-            output_tokens: parsed.output_tokens,
-            stop_reason: parsed.stop_reason,
-            latency_ms,
-        })
+            .json(&body);
+        send_and_decode(request, parse_response)
     }
-}
-
-struct ParsedResponse {
-    text: String,
-    input_tokens: u32,
-    output_tokens: u32,
-    stop_reason: String,
 }
 
 /// Chat Completions 응답 JSON에서 코드 텍스트와 토큰 회계를 뽑는다.
@@ -133,17 +102,10 @@ fn parse_response(json: &serde_json::Value) -> Result<ParsedResponse, LlmError> 
         .to_string();
 
     let usage = json.get("usage");
-    let token = |field: &str| {
-        usage
-            .and_then(|u| u.get(field))
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0) as u32
-    };
-
     Ok(ParsedResponse {
         text,
-        input_tokens: token("prompt_tokens"),
-        output_tokens: token("completion_tokens"),
+        input_tokens: u32_field(usage, "prompt_tokens"),
+        output_tokens: u32_field(usage, "completion_tokens"),
         stop_reason: choice
             .get("finish_reason")
             .and_then(|v| v.as_str())

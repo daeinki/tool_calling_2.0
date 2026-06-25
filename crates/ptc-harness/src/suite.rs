@@ -365,6 +365,25 @@ impl ScriptedBaselineProvider {
     }
 }
 
+/// ReAct 스크립트에서 이번 턴의 응답을 만든다. 관측(`OBSERVATION `) 수로 단계를 고르고,
+/// 단계를 넘어서면 마지막 행동을 반복한다(멈춘 모델 모델링). 토큰 회계는 추정치로 채운다.
+/// suite의 [`ScriptedBaselineProvider`]와 baseline 테스트의 ScriptProvider가 공유한다(DRY).
+pub(crate) fn step_response(req: &CompletionReq, script: &[String]) -> CompletionResp {
+    let step = req.user.matches("OBSERVATION ").count();
+    let text = script
+        .get(step)
+        .or_else(|| script.last())
+        .cloned()
+        .unwrap_or_default();
+    CompletionResp {
+        input_tokens: estimate_tokens(&req.system) + estimate_tokens(&req.user),
+        output_tokens: estimate_tokens(&text),
+        text,
+        stop_reason: "end_turn".to_string(),
+        latency_ms: 0,
+    }
+}
+
 impl LlmProvider for ScriptedBaselineProvider {
     fn name(&self) -> &str {
         &self.name
@@ -374,19 +393,7 @@ impl LlmProvider for ScriptedBaselineProvider {
         let script = self.script_for(&req.user).ok_or_else(|| {
             LlmError::Transport("baseline: 질문에 맞는 스크립트 없음".to_string())
         })?;
-        let step = req.user.matches("OBSERVATION ").count();
-        let text = script
-            .get(step)
-            .or_else(|| script.last())
-            .cloned()
-            .unwrap_or_default();
-        Ok(CompletionResp {
-            input_tokens: estimate_tokens(&req.system) + estimate_tokens(&req.user),
-            output_tokens: estimate_tokens(&text),
-            text,
-            stop_reason: "end_turn".to_string(),
-            latency_ms: 0,
-        })
+        Ok(step_response(&req, script))
     }
 }
 

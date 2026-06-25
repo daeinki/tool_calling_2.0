@@ -10,8 +10,8 @@
 
 use crate::grader::Execution;
 use crate::react::{parse_action, Action};
-use crate::record::{record_trace, value_to_json, Grade, Metrics, Mode, RunRecord};
-use crate::runner::{build_grader, RunResult};
+use crate::record::{record_trace, value_to_json, Grade, Mode, RunRecord};
+use crate::runner::{build_grader, fail, skeleton, RunMeta, RunResult};
 use crate::task::Task;
 use crate::taxonomy::FailureCategory;
 use ptc_dsl::{ToolCatalog, ToolSink};
@@ -24,16 +24,6 @@ pub const SYS_BASELINE_V1: &str = include_str!("../../../prompts/sys-baseline-v1
 pub const SYS_BASELINE_V1_VERSION: &str = "sys-baseline-v1";
 /// ReAct 루프가 한 태스크에 허용하는 최대 턴 수(무한 루프 방지).
 pub const MAX_TURNS: u32 = 32;
-
-/// 한 실행의 식별 정보(인수 수를 줄이려 묶는다).
-struct RunMeta<'a> {
-    run_id: String,
-    task: &'a Task,
-    provider_name: &'a str,
-    seed: Option<u64>,
-    temperature: f32,
-    repeat_idx: u32,
-}
 
 /// baseline ReAct 러너. 시스템 프롬프트·도구 카탈로그·최대 턴을 묶는다.
 pub struct BaselineRunner<'a> {
@@ -84,7 +74,8 @@ impl<'a> BaselineRunner<'a> {
             temperature,
             repeat_idx,
         };
-        let mut record = self.skeleton(&meta);
+        // ReAct: llm_calls는 턴마다 1씩 누적하므로 0에서 시작한다.
+        let mut record = skeleton(&meta, Mode::Baseline1_0, self.prompt_version, 0);
         let mut server = MockToolServer::new();
         let mut observations: Vec<String> = Vec::new();
 
@@ -179,36 +170,6 @@ impl<'a> BaselineRunner<'a> {
         }
     }
 
-    /// 빈 baseline 레코드 골격. 호출자가 지표·결과를 채운다.
-    fn skeleton(&self, meta: &RunMeta) -> RunRecord {
-        RunRecord {
-            run_id: meta.run_id.clone(),
-            task_id: meta.task.id.clone(),
-            tier: meta.task.tier.clone(),
-            mode: Mode::Baseline1_0,
-            provider: meta.provider_name.to_string(),
-            model: meta.provider_name.to_string(),
-            prompt_version: self.prompt_version.to_string(),
-            seed: meta.seed,
-            temperature: meta.temperature,
-            repeat_idx: meta.repeat_idx,
-            generated_code: String::new(),
-            extraction: "n/a".to_string(),
-            validation: "n/a".to_string(),
-            tool_trace: Vec::new(),
-            final_output: None,
-            grade: None,
-            failure: None,
-            metrics: Metrics {
-                llm_calls: 0, // ReAct: 턴마다 1씩 누적한다.
-                tool_calls: 0,
-                input_tokens: 0,
-                output_tokens: 0,
-                latency_ms: 0,
-            },
-            error: None,
-        }
-    }
 }
 
 /// 도구 트레이스·호출 수를 레코드에 박는다(여러 종료점에서 공통).
@@ -234,24 +195,17 @@ fn push_line(buffer: &mut String, line: &str) {
     buffer.push_str(line);
 }
 
-fn fail(mut record: RunRecord, category: FailureCategory, message: &str) -> RunResult {
-    record.error = Some(message.to_string());
-    record.failure = Some(category.label().to_string());
-    RunResult {
-        record,
-        category: Some(category),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::runner::pass_rate;
+    use crate::suite::step_response;
     use crate::task::parse_task;
-    use ptc_llm::{estimate_tokens, CompletionResp, LlmError};
+    use ptc_llm::{CompletionResp, LlmError};
     use ptc_tools::tool_names;
 
     /// 관측 수로 단계를 골라 스크립트된 행동을 돌려주는 테스트용 ReAct provider.
+    /// 스텝 선택·토큰 회계는 suite의 [`step_response`]를 공유한다(DRY).
     struct ScriptProvider {
         steps: Vec<String>,
     }
@@ -262,21 +216,7 @@ mod tests {
         }
 
         fn complete(&self, req: CompletionReq) -> Result<CompletionResp, LlmError> {
-            let step = req.user.matches("OBSERVATION ").count();
-            // 단계를 넘어서면 마지막 행동을 반복한다(멈춘 모델의 행동을 모델링).
-            let text = self
-                .steps
-                .get(step)
-                .or_else(|| self.steps.last())
-                .cloned()
-                .unwrap_or_default();
-            Ok(CompletionResp {
-                input_tokens: estimate_tokens(&req.system) + estimate_tokens(&req.user),
-                output_tokens: estimate_tokens(&text),
-                text,
-                stop_reason: "end_turn".to_string(),
-                latency_ms: 0,
-            })
+            Ok(step_response(&req, &self.steps))
         }
     }
 

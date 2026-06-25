@@ -7,8 +7,10 @@
 //! **경계(clean-code §7):** HTTP·JSON 세부는 이 모듈 안에 갇히고, 바깥에는
 //! [`LlmProvider`] trait만 보인다.
 
-use crate::{CompletionReq, CompletionResp, LlmError, LlmProvider};
-use std::time::Instant;
+use crate::{
+    send_and_decode, u32_field, CompletionReq, CompletionResp, LlmError, LlmProvider,
+    ParsedResponse,
+};
 
 const ANTHROPIC_BASE_URL: &str = "https://api.anthropic.com";
 const ANTHROPIC_VERSION: &str = "2023-06-01";
@@ -74,47 +76,14 @@ impl LlmProvider for AnthropicProvider {
 
     fn complete(&self, req: CompletionReq) -> Result<CompletionResp, LlmError> {
         let body = self.build_body(&req);
-        let started = Instant::now();
-        let response = self
+        let request = self
             .client
             .post(format!("{}/v1/messages", self.base_url))
             .header("x-api-key", &self.api_key)
             .header("anthropic-version", ANTHROPIC_VERSION)
-            .json(&body)
-            .send()
-            .map_err(|e| LlmError::Transport(e.to_string()))?;
-        let latency_ms = started.elapsed().as_millis() as u64;
-
-        let status = response.status();
-        let text = response
-            .text()
-            .map_err(|e| LlmError::Transport(e.to_string()))?;
-        if !status.is_success() {
-            return Err(LlmError::Api {
-                status: status.as_u16(),
-                message: text,
-            });
-        }
-
-        let json: serde_json::Value =
-            serde_json::from_str(&text).map_err(|e| LlmError::Decode(e.to_string()))?;
-        let parsed = parse_response(&json)?;
-
-        Ok(CompletionResp {
-            text: parsed.text,
-            input_tokens: parsed.input_tokens,
-            output_tokens: parsed.output_tokens,
-            stop_reason: parsed.stop_reason,
-            latency_ms,
-        })
+            .json(&body);
+        send_and_decode(request, parse_response)
     }
-}
-
-struct ParsedResponse {
-    text: String,
-    input_tokens: u32,
-    output_tokens: u32,
-    stop_reason: String,
 }
 
 /// Messages API 응답 JSON에서 코드 텍스트와 토큰 회계를 뽑는다.
@@ -135,17 +104,10 @@ fn parse_response(json: &serde_json::Value) -> Result<ParsedResponse, LlmError> 
         .to_string();
 
     let usage = json.get("usage");
-    let token = |field: &str| {
-        usage
-            .and_then(|u| u.get(field))
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0) as u32
-    };
-
     Ok(ParsedResponse {
         text,
-        input_tokens: token("input_tokens"),
-        output_tokens: token("output_tokens"),
+        input_tokens: u32_field(usage, "input_tokens"),
+        output_tokens: u32_field(usage, "output_tokens"),
         stop_reason: json
             .get("stop_reason")
             .and_then(|v| v.as_str())
