@@ -12,15 +12,26 @@ use crate::error::ParseError;
 use crate::span::Span;
 use crate::token::{Token, TokenKind};
 
+/// 표현식 재귀 중첩의 상한. 깊은 식(`((((…))))`, `a[a[a[…]]]`)이 파서·인터프리터
+/// 재귀를 폭주시켜 스택 오버플로로 프로세스를 죽이는 것을 파싱 단계에서 막는다.
+/// 정상 코드의 식 깊이는 한 자릿수라 충분히 여유 있고, 스택 한계보다는 한참 낮다.
+pub(crate) const MAX_EXPR_DEPTH: usize = 128;
+
 /// 토큰 열 위를 커서로 훑는 파서.
 pub(crate) struct Parser {
     tokens: Vec<Token>,
     pos: usize,
+    /// 현재 표현식 재귀 깊이(`parse_binary` 진입마다 증가, 반환 시 감소).
+    depth: usize,
 }
 
 impl Parser {
     pub(crate) fn new(tokens: Vec<Token>) -> Self {
-        Self { tokens, pos: 0 }
+        Self {
+            tokens,
+            pos: 0,
+            depth: 0,
+        }
     }
 
     // ── 표현식 ──
@@ -31,12 +42,41 @@ impl Parser {
     }
 
     /// precedence-climbing: `min_prec` 이상으로 결합하는 이항 연산만 흡수한다.
+    /// 표현식 재귀의 단일 관문이므로 여기서 깊이를 세어 [`MAX_EXPR_DEPTH`]를 강제한다
+    /// (괄호·인덱스·인자 안의 식은 모두 `parse_expr`→여기로 들어온다).
     fn parse_binary(&mut self, min_prec: u8) -> Result<Expr, ParseError> {
+        self.depth += 1;
+        if self.depth > MAX_EXPR_DEPTH {
+            self.depth -= 1;
+            return Err(ParseError::ExpressionTooDeep {
+                depth: MAX_EXPR_DEPTH + 1,
+                max: MAX_EXPR_DEPTH,
+                span: self.peek_span(),
+            });
+        }
+        let result = self.parse_binary_body(min_prec);
+        self.depth -= 1;
+        result
+    }
+
+    fn parse_binary_body(&mut self, min_prec: u8) -> Result<Expr, ParseError> {
         let mut left = self.parse_postfix()?;
         while let Some(op) = as_binop(self.peek_kind()) {
             let prec = precedence(op);
             if prec < min_prec {
                 break;
+            }
+            // 비교 연산자는 비결합: `a < b < c`처럼 비교 결과를 다시 비교하면 거부한다.
+            // (Python의 연쇄 비교를 흉내 내지 않으므로, 혼란스러운 런타임 TypeMismatch
+            //  대신 파싱 시점에 명확히 실패시킨다.)
+            if is_comparison(op) {
+                if let ExprKind::Binary { op: left_op, .. } = &left.kind {
+                    if is_comparison(*left_op) {
+                        return Err(ParseError::ChainedComparison {
+                            span: self.peek_span(),
+                        });
+                    }
+                }
             }
             self.advance();
             let right = self.parse_binary(prec + 1)?; // 좌결합: 같은 레벨은 왼쪽이 먼저
@@ -406,6 +446,14 @@ fn as_binop(kind: &TokenKind) -> Option<BinOp> {
     })
 }
 
+/// 비교 연산자인가(비결합 처리 대상).
+fn is_comparison(op: BinOp) -> bool {
+    matches!(
+        op,
+        BinOp::Eq | BinOp::Ne | BinOp::Gt | BinOp::Lt | BinOp::Ge | BinOp::Le
+    )
+}
+
 /// 결합력(클수록 강하게 묶는다).
 fn precedence(op: BinOp) -> u8 {
     match op {
@@ -477,6 +525,58 @@ mod tests {
             } => assert!(matches!(lhs.kind, ExprKind::Binary { op: BinOp::Lt, .. })),
             other => panic!("expected And at root, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn chained_comparison_is_rejected() {
+        assert!(matches!(
+            parse_err("1 < 2 < 3"),
+            ParseError::ChainedComparison { .. }
+        ));
+        assert!(matches!(
+            parse_err("a == b == c"),
+            ParseError::ChainedComparison { .. }
+        ));
+    }
+
+    #[test]
+    fn separate_comparisons_joined_by_logical_op_parse() {
+        // a < b and c < d 는 연쇄가 아니라 두 비교를 and로 묶은 것 → 정상.
+        match parse("a < b and c < d").kind {
+            ExprKind::Binary {
+                op: BinOp::And,
+                lhs,
+                rhs,
+            } => {
+                assert!(matches!(lhs.kind, ExprKind::Binary { op: BinOp::Lt, .. }));
+                assert!(matches!(rhs.kind, ExprKind::Binary { op: BinOp::Lt, .. }));
+            }
+            other => panic!("expected And at root, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn deeply_nested_expression_is_rejected_without_panic() {
+        // 깊은 중첩 괄호가 스택 오버플로 대신 ExpressionTooDeep로 거부되는지.
+        let deep = format!("{}1{}", "(".repeat(500), ")".repeat(500));
+        assert!(matches!(
+            parse_err(&deep),
+            ParseError::ExpressionTooDeep { .. }
+        ));
+        // 깊은 인덱스 체인도 마찬가지.
+        let idx = format!("a{}{}", "[a".repeat(300), "]".repeat(300));
+        assert!(matches!(
+            parse_err(&idx),
+            ParseError::ExpressionTooDeep { .. }
+        ));
+    }
+
+    #[test]
+    fn moderately_nested_expression_still_parses() {
+        // 정상적인 깊이(한 자릿수~수십)의 식은 영향 없이 파싱된다.
+        let ok = format!("{}1{}", "(".repeat(20), ")".repeat(20));
+        let tokens = tokenize(&ok).expect("lexes");
+        assert!(Parser::new(tokens).parse_expr().is_ok());
     }
 
     #[test]

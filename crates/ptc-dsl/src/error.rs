@@ -47,12 +47,25 @@ pub enum ParseError {
 
     #[error("[{span}] 입력이 예기치 않게 끝남")]
     UnexpectedEof { span: Span },
+
+    #[error("[{span}] 표현식 중첩 깊이 {depth}이(가) 허용치 {max}을(를) 초과")]
+    ExpressionTooDeep {
+        depth: usize,
+        max: usize,
+        span: Span,
+    },
+
+    #[error("[{span}] 비교 연산자는 연쇄할 수 없습니다")]
+    ChainedComparison { span: Span },
 }
 
 impl ParseError {
     pub fn span(&self) -> Span {
         match self {
-            ParseError::UnexpectedToken { span, .. } | ParseError::UnexpectedEof { span } => *span,
+            ParseError::UnexpectedToken { span, .. }
+            | ParseError::UnexpectedEof { span }
+            | ParseError::ExpressionTooDeep { span, .. }
+            | ParseError::ChainedComparison { span } => *span,
         }
     }
 }
@@ -106,6 +119,9 @@ pub enum RuntimeError {
         reason: String,
         span: Span,
     },
+
+    #[error("[{span}] 0으로 나눌 수 없음")]
+    DivisionByZero { span: Span },
 }
 
 impl RuntimeError {
@@ -114,7 +130,8 @@ impl RuntimeError {
             RuntimeError::TypeMismatch { span, .. }
             | RuntimeError::UndefinedVariable { span, .. }
             | RuntimeError::KeyNotFound { span, .. }
-            | RuntimeError::ToolFailed { span, .. } => *span,
+            | RuntimeError::ToolFailed { span, .. }
+            | RuntimeError::DivisionByZero { span } => *span,
         }
     }
 }
@@ -153,6 +170,31 @@ mod tests {
             err.to_string(),
             "[4:1] ':'을(를) 기대했으나 'for'을(를) 만남"
         );
+    }
+
+    #[test]
+    fn parse_error_chained_comparison_and_depth_display() {
+        let deep = ParseError::ExpressionTooDeep {
+            depth: 65,
+            max: 64,
+            span: Span::new(3, 1),
+        };
+        assert_eq!(
+            deep.to_string(),
+            "[3:1] 표현식 중첩 깊이 65이(가) 허용치 64을(를) 초과"
+        );
+        let chained = ParseError::ChainedComparison {
+            span: Span::new(1, 7),
+        };
+        assert_eq!(chained.to_string(), "[1:7] 비교 연산자는 연쇄할 수 없습니다");
+    }
+
+    #[test]
+    fn runtime_error_division_by_zero_display() {
+        let err = RuntimeError::DivisionByZero {
+            span: Span::new(2, 5),
+        };
+        assert_eq!(err.to_string(), "[2:5] 0으로 나눌 수 없음");
     }
 
     #[test]

@@ -146,10 +146,14 @@ fn ratio(numer: &[f64], denom: &[f64]) -> f64 {
 }
 
 /// 정렬된 표본의 백분위(최근접 순위). q는 0..1.
+///
+/// 1-기반 최근접 순위 `ceil(q·n)`을 0-기반 인덱스로 변환한다. `floor`를 0-기반
+/// 인덱스로 바로 쓰면 경계가 한 순위 위로 밀려(예: q=0.975·n=10000 → 9750 대신 9749가
+/// 정답) CI 상·하한이 함께 편향되므로, `ceil`로 보정한다.
 fn percentile(sorted: &[f64], q: f64) -> f64 {
     let n = sorted.len();
-    let rank = (q * n as f64).floor() as usize;
-    sorted[rank.min(n - 1)]
+    let rank = ((q * n as f64).ceil() as usize).max(1);
+    sorted[rank.min(n) - 1]
 }
 
 /// 결정론적 xorshift64 PRNG(부트스트랩 재현성용).
@@ -242,6 +246,19 @@ mod tests {
         let a = bootstrap_ratio_ci(&ptc, &baseline, 1000, 7);
         let b = bootstrap_ratio_ci(&ptc, &baseline, 1000, 7);
         assert_eq!(a, b);
+    }
+
+    #[test]
+    fn percentile_uses_nearest_rank() {
+        // 1..=100을 정렬한 표본. 최근접 순위 ceil(q·n)의 0-기반 인덱스를 본다.
+        let sorted: Vec<f64> = (1..=100).map(|i| i as f64).collect();
+        // q=0.025 → ceil(2.5)=3 → index 2 → 값 3.0
+        assert_eq!(percentile(&sorted, 0.025), 3.0);
+        // q=0.975 → ceil(97.5)=98 → index 97 → 값 98.0
+        assert_eq!(percentile(&sorted, 0.975), 98.0);
+        // 경계: q=0 → 첫 원소, q=1 → 마지막 원소.
+        assert_eq!(percentile(&sorted, 0.0), 1.0);
+        assert_eq!(percentile(&sorted, 1.0), 100.0);
     }
 
     #[test]

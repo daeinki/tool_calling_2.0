@@ -208,9 +208,13 @@ impl<'a> Interpreter<'a> {
             BinOp::Mul => Ok(Value::Num(
                 expect_num(&left, span)? * expect_num(&right, span)?,
             )),
-            BinOp::Div => Ok(Value::Num(
-                expect_num(&left, span)? / expect_num(&right, span)?,
-            )),
+            BinOp::Div => {
+                let divisor = expect_num(&right, span)?;
+                if divisor == 0.0 {
+                    return Err(RuntimeError::DivisionByZero { span });
+                }
+                Ok(Value::Num(expect_num(&left, span)? / divisor))
+            }
             BinOp::Gt => Ok(Value::Bool(
                 expect_num(&left, span)? > expect_num(&right, span)?,
             )),
@@ -477,6 +481,23 @@ mod tests {
             run("emit(True or missing)").unwrap(),
             Some(Value::Bool(true))
         );
+    }
+
+    #[test]
+    fn division_by_zero_is_a_runtime_error() {
+        assert!(matches!(
+            run("emit(1 / 0)"),
+            Err(RuntimeError::DivisionByZero { .. })
+        ));
+        assert!(matches!(
+            run("emit(0 / 0)"),
+            Err(RuntimeError::DivisionByZero { .. })
+        ));
+    }
+
+    #[test]
+    fn division_by_nonzero_is_fine() {
+        assert_eq!(run("emit(6 / 2)").unwrap(), Some(Value::Num(3.0)));
     }
 
     #[test]
