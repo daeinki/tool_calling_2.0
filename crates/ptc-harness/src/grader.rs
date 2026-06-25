@@ -62,16 +62,15 @@ fn values_equivalent(a: &Value, b: &Value) -> bool {
     /// 상대·절대 혼합 허용오차. 통화·카운트 같은 큰 정수도, 0 근방 값도 안전하게 본다.
     const EPSILON: f64 = 1e-9;
     match (a, b) {
-        (Value::Num(x), Value::Num(y)) => {
-            (x - y).abs() <= EPSILON * x.abs().max(y.abs()).max(1.0)
-        }
+        (Value::Num(x), Value::Num(y)) => (x - y).abs() <= EPSILON * x.abs().max(y.abs()).max(1.0),
         (Value::List(xs), Value::List(ys)) => {
-            xs.len() == ys.len()
-                && xs.iter().zip(ys).all(|(x, y)| values_equivalent(x, y))
+            xs.len() == ys.len() && xs.iter().zip(ys).all(|(x, y)| values_equivalent(x, y))
         }
         (Value::Map(xs), Value::Map(ys)) => {
             xs.len() == ys.len()
-                && xs.iter().all(|(k, x)| ys.get(k).is_some_and(|y| values_equivalent(x, y)))
+                && xs
+                    .iter()
+                    .all(|(k, x)| ys.get(k).is_some_and(|y| values_equivalent(x, y)))
         }
         _ => a == b,
     }

@@ -186,7 +186,10 @@ mod tests {
         let chained = ParseError::ChainedComparison {
             span: Span::new(1, 7),
         };
-        assert_eq!(chained.to_string(), "[1:7] 비교 연산자는 연쇄할 수 없습니다");
+        assert_eq!(
+            chained.to_string(),
+            "[1:7] 비교 연산자는 연쇄할 수 없습니다"
+        );
     }
 
     #[test]

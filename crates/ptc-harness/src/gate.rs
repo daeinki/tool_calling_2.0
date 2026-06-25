@@ -322,8 +322,8 @@ pub fn run_m3_gate() -> M3GateOutcome {
     // 전체 스위트는 한 번만 실행한다. 결정성(재현성)은 대표 태스크 1건을 같은 시드로
     // 다시 돌려 통과 결과가 동일한지로 입증한다(전체 재실행 ~330건 → ~3건으로 절감).
     let first = run_batch(&provider_refs, &tasks, &catalog(), &config);
-    let repro = (!tasks.is_empty())
-        .then(|| run_batch(&provider_refs, &tasks[..1], &catalog(), &config));
+    let repro =
+        (!tasks.is_empty()).then(|| run_batch(&provider_refs, &tasks[..1], &catalog(), &config));
     summarize_m3(tasks.len(), first, repro)
 }
 
@@ -353,7 +353,8 @@ fn summarize_m3(
             match repro_records.first() {
                 Some(record) => {
                     let id = record.task_id.clone();
-                    pass_signature(&first_records, Some(&id)) == pass_signature(&repro_records, None)
+                    pass_signature(&first_records, Some(&id))
+                        == pass_signature(&repro_records, None)
                 }
                 None => true,
             }
