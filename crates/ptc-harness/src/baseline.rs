@@ -169,7 +169,6 @@ impl<'a> BaselineRunner<'a> {
             fail(record, FailureCategory::WrongAnswer, "기대값과 다른 결과")
         }
     }
-
 }
 
 /// 도구 트레이스·호출 수를 레코드에 박는다(여러 종료점에서 공통).

@@ -178,7 +178,6 @@ impl<'a> Runner<'a> {
             fail(record, FailureCategory::WrongAnswer, "기대값과 다른 결과")
         }
     }
-
 }
 
 /// 실행 식별 정보로 빈 레코드 골격을 만든다. 호출자가 코드·지표·결과를 채운다.
@@ -251,11 +250,7 @@ pub(crate) fn build_grader(task: &Task) -> Option<Box<dyn Grader>> {
 
 /// 실패 분류를 레코드에 박아 RunResult로 감싼다. PTC·baseline 러너가 공유한다.
 /// 분류를 레코드에 새겨 JSONL만으로 분포를 집계할 수 있게 한다(M3-T06).
-pub(crate) fn fail(
-    mut record: RunRecord,
-    category: FailureCategory,
-    message: &str,
-) -> RunResult {
+pub(crate) fn fail(mut record: RunRecord, category: FailureCategory, message: &str) -> RunResult {
     record.error = Some(message.to_string());
     record.failure = Some(category.label().to_string());
     RunResult {
